@@ -1,0 +1,277 @@
+import cython
+import numpy as np
+cimport numpy as np
+import scipy.linalg
+import scipy.sparse
+import scipy.sparse.linalg
+
+from gmres cimport GMRES
+from lu cimport LU
+from linear_algebra cimport LinearProblem, LinearSolver, Vector, Matrix
+
+
+cdef class BarLinearProblem(LinearProblem):
+
+    cdef void setup(self, int size):
+        self.size = size
+
+    cdef Matrix get_matrix(self):
+        return self.pR_py
+
+    cdef void set_matrix(self, Matrix pR_py):
+        self.pR_py = pR_py
+
+        self.invA = scipy.sparse.linalg.spilu(
+            scipy.sparse.csc_matrix(np.array(pR_py.get_data())),
+            drop_tol = 0.1,
+            fill_factor = 3,
+        )
+
+    # cdef void apply_precond(self, Vector x, Vector y):
+    #     y.set_data(self.invA.solve(np.array(x.get_data())))
+
+    cdef void apply_mtx(self, Vector x, Vector y):
+        self.pR_py.dot(x, y)
+
+
+@cython.cdivision(True)
+cdef class Bar:
+
+    cdef int num_elem, num_node, nl_iter, size
+    cdef double E, r0, L_elem, p
+    cdef double nl_atol, nl_rtol, V
+    cdef double F, C
+    cdef Vector x, y, dy, R, L, work1, work2
+    cdef Vector pC_px, pF_py
+    cdef Matrix pR_px, pR_py
+    cdef LinearSolver linear_solver
+    cdef BarLinearProblem lp
+
+    cpdef void setup(
+            self, int num_elem=1, int iterative=0, 
+            int nl_iter=20, double nl_atol=1e-10, double nl_rtol=1e-10,
+            int ln_iter=10, double ln_atol=1e-10, double ln_rtol=1e-10,
+            double in_atol=1e-10, double in_rtol=1e-10,
+            double E=1., double r0=0.1, double L=1., double p=2., double V=1.):
+        cdef int size = num_elem + 2
+        self.size = num_elem + 2
+        self.num_elem = num_elem
+        self.num_node = num_elem + 1
+        self.nl_iter = nl_iter
+        self.nl_atol = nl_atol
+        self.nl_rtol = nl_rtol
+
+        self.E = E
+        self.r0 = r0
+        self.L_elem = L / num_elem
+        self.p = p
+        self.V = V
+
+        self.lp = BarLinearProblem()
+        self.lp.setup(size)
+        
+        if iterative > 0.5:
+            self.linear_solver = GMRES()
+        else:
+            self.linear_solver = LU()
+        self.linear_solver.setup(self.lp, ln_iter, ln_atol, ln_rtol)
+
+        self.x = Vector()
+        self.y = Vector()
+        self.dy = Vector()
+        self.R = Vector()
+        self.L = Vector()
+        self.work1 = Vector()
+        self.work2 = Vector()
+        self.pC_px = Vector()
+        self.pF_py = Vector()
+        self.pR_px = Matrix()
+        self.pR_py = Matrix()
+
+        self.x.setup(num_elem)
+        self.y.setup(size)
+        self.dy.setup(size)
+        self.R.setup(size)
+        self.L.setup(size)
+        self.work1.setup(size)
+        self.work2.setup(size)
+        self.pC_px.setup(num_elem)
+        self.pF_py.setup(size)
+        self.pR_px.setup(size, num_elem)
+        self.pR_py.setup(size, size)
+
+    cpdef void set_x(self, double[:] data):
+        self.x.set_data(data)
+
+    cpdef void set_y(self, double[:] data):
+        self.y.set_data(data)
+
+    cpdef void set_L(self, double[:] data):
+        self.L.set_data(data)
+
+    def get_x(self):
+        return np.array(self.x.get_data())
+
+    def get_y(self):
+        return np.array(self.y.get_data())
+
+    def get_R(self):
+        self._compute_R()
+        return np.array(self.R.get_data())
+
+    def get_F(self):
+        self._compute_F()
+        return self.F
+
+    def get_C(self):
+        self._compute_C()
+        return self.C
+
+    def get_pR_px(self):
+        self._compute_pR_px()
+        return np.array(self.pR_px.get_data())
+
+    def get_pR_py(self):
+        self._compute_pR_py()
+        return np.array(self.pR_py.get_data())
+
+    def get_pC_px(self):
+        self._compute_pC_px()
+        return np.array(self.pC_px.get_data())
+
+    def get_pF_py(self):
+        self._compute_pF_py()
+        return np.array(self.pF_py.get_data())
+
+    cdef void _compute_R(self):
+        cdef int i, i_elem
+        cdef double p = self.p
+        cdef double[:] x = self.x.get_data()
+        cdef double[:] y = self.y.get_data()
+        cdef Vector R = self.R
+
+        R.set_const(0.)
+        R.iadd(-1., self.L)
+
+        for i_elem in range(self.num_elem):
+            R.addto_entry(
+                i_elem + 0, 
+                self.E * np.pi * (self.r0 ** 2 + x[i_elem] ** 2) * (y[i_elem + 0] ** p - y[i_elem + 1] ** p) / (self.L_elem) ** p)
+            R.addto_entry(
+                i_elem + 1, 
+                self.E * np.pi * (self.r0 ** 2 + x[i_elem] ** 2) * (y[i_elem + 1] ** p - y[i_elem + 0] ** p) / (self.L_elem) ** p)
+
+        R.addto_entry(0, y[self.num_node])
+        R.addto_entry(self.num_node, y[0])
+
+    cdef void _compute_pR_px(self):
+        cdef int i, j, i_elem
+        cdef double p = self.p
+        cdef double[:] x = self.x.get_data()
+        cdef double[:] y = self.y.get_data()
+        cdef Matrix pR_px = self.pR_px
+
+        pR_px.set_const(0.)
+
+        for i_elem in range(self.num_elem):
+            pR_px.addto_entry(
+                i_elem + 0, i_elem,
+                self.E * np.pi * (2 * x[i_elem]) * (y[i_elem + 0] ** p - y[i_elem + 1] ** p) / (self.L_elem) ** p)
+            pR_px.addto_entry(
+                i_elem + 1, i_elem,
+                self.E * np.pi * (2 * x[i_elem]) * (y[i_elem + 1] ** p - y[i_elem + 0] ** p) / (self.L_elem) ** p)
+
+    cdef void _compute_pR_py(self):
+        cdef int i, j, i_elem
+        cdef double p = self.p
+        cdef double[:] x = self.x.get_data()
+        cdef double[:] y = self.y.get_data()
+        cdef Matrix pR_py = self.pR_py
+
+        pR_py.set_const(0.)
+
+        for i_elem in range(self.num_elem):
+            pR_py.addto_entry(
+                i_elem + 0, i_elem + 0, 
+                self.E * np.pi * (self.r0 ** 2 + x[i_elem] ** 2) * ( p * y[i_elem + 0] ** (p - 1)) / (self.L_elem) ** p)
+            pR_py.addto_entry(
+                i_elem + 0, i_elem + 1,
+                self.E * np.pi * (self.r0 ** 2 + x[i_elem] ** 2) * (-p * y[i_elem + 1] ** (p - 1)) / (self.L_elem) ** p)
+            pR_py.addto_entry(
+                i_elem + 1, i_elem + 0,
+                self.E * np.pi * (self.r0 ** 2 + x[i_elem] ** 2) * (-p * y[i_elem + 0] ** (p - 1)) / (self.L_elem) ** p)
+            pR_py.addto_entry(
+                i_elem + 1, i_elem + 1,
+                self.E * np.pi * (self.r0 ** 2 + x[i_elem] ** 2) * ( p * y[i_elem + 1] ** (p - 1)) / (self.L_elem) ** p)
+
+        pR_py.set_entry(0, self.num_node, 1.)
+        pR_py.set_entry(self.num_node, 0, 1.)
+
+    cdef void _compute_F(self):
+        self.F = self.L.dot(self.y)
+
+    cdef void _compute_C(self):
+        cdef int i
+        cdef double[:] x = self.x.get_data()
+
+        self.C = -self.V
+        for i in range(self.num_elem):
+            self.C += self.L_elem * np.pi * (self.r0 ** 2 + x[i] ** 2)
+
+    cdef void _compute_pC_px(self):
+        cdef int i
+        cdef double[:] x = self.x.get_data()
+
+        for i in range(self.num_elem):
+            self.pC_px.set_entry(i, self.L_elem * np.pi * 2 * x[i])
+
+    cdef void _compute_pF_py(self):
+        self.pF_py.set_vec(self.L)
+
+    cpdef int solve_y(self, int suppress_print, double atol, double rtol):
+        cdef int ind
+        cdef Vector x = self.x
+        cdef Vector y = self.y
+        cdef Vector dy = self.dy
+        cdef Vector R = self.R
+        cdef Matrix pR_py = self.pR_py
+
+        self._compute_R()
+        R_norm = R.get_norm()
+        R_norm0 = R_norm
+        if suppress_print == 0:
+            print(0, R_norm/R_norm0, R_norm)
+
+        for ind in range(self.nl_iter):
+            if R_norm < atol:
+                break
+            if (R_norm/R_norm0) < rtol:
+                break
+
+            self._compute_pR_py()
+            self._linear_solution(R, dy, 0)
+            y.iadd(-1., dy)
+
+            self._compute_R()
+            R_norm = R.get_norm()
+            if suppress_print == 0:
+                print(ind + 1, R_norm/R_norm0, R_norm)
+
+        return ind + 1
+
+    cdef void _linear_solution(self, Vector rhs, Vector sol, int mode):
+        if mode == 1:
+            self.pR_py.set_data(self.pR_py.get_data().T)
+
+        self.lp.set_matrix(self.pR_py)
+        self.linear_solver.solve(rhs, sol)
+
+        if mode == 1:
+            self.pR_py.set_data(self.pR_py.get_data().T)
+
+    cpdef void linear_solution(self, double[:] rhs, double[:] sol, int mode):
+        self.work1.set_data(rhs)
+        self.work2.set_data(sol)
+        self._linear_solution(self.work1, self.work2, mode)
+
+        sol[:] = self.work2.get_data()[:]
