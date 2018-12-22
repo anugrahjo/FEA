@@ -2,7 +2,7 @@ import cython
 import numpy as np
 cimport numpy as np
 from cpython cimport array
-
+from linear_algebra.arrays import Array
 
 from fea_element import FEAElement
 
@@ -14,18 +14,18 @@ cdef class FEAMesh():
 
     cdef int num_total_elements
 
-    cdef array.array node_coords
+    cdef node_coords = Array()
 
-    cdef array.array elem_to_node_indices
-    cdef array.array elem_to_node_indices_i0
-    cdef array.array elem_to_node_indices_i1
+    cdef elem_to_node_indices = Array()
+    cdef elem_to_node_indices_i0 = Array()
+    cdef elem_to_node_indices_i1 = Array()
 
     def __cinit__(self):
         self.num_total_elements = 0
 
-        self.elem_to_node_indices = array.array('i', [])
-        self.elem_to_node_indices_i0 = array.array('i', [])
-        self.elem_to_node_indices_i1 = array.array('i', [])
+        self.elem_to_node_indices = Array()
+        self.elem_to_node_indices_i0 = Array()
+        self.elem_to_node_indices_i1 = Array()
 
     cpdef void set_nodes(self, double[:, :] in_node_coords):
         # in_node_coords: 2-D Python array
@@ -36,41 +36,54 @@ cdef class FEAMesh():
         cdef double[:] node_coords
 
         # Initial allocation of memory for self.node_coords
-        self.node_coords = array.array('i', [])
-        self.node_coords.resize(in_node_coords.shape[0] * in_node_coords.shape[1])
+        self.node_coords = Array()
+        cdef np.ndarray[int, ndim=1, mode='c'] shape = np.array([in_node_coords.shape[0], in_node_coords.shape[1]], dtype =np.intc)
+        self.node_coords.allocate(<int*>shape.data, 2, 1)
 
         # The local variable node_coords points to self.node_coords
-        node_coords = self.node_coords
-
+        # node_coords = self.node_coords
+        
         self.num_total_nodes = in_node_coords.shape[0]
         self.num_dimensions = in_node_coords.shape[1]
 
         # Turn 2-D array (in_node_coords) into 1-D array (node_coords)
-        for inode in range(self.num_total_nodes):
-            for idim in range(self.num_dimensions):
-                node_coords[self.num_dimensions * inode + idim] = in_node_coords[inode, idim]
-                node_coords[0] = 1
+        for idim in range(self.num_dimensions):
+            for inode in range(self.num_total_nodes):
+                self.node_coords.data[self.num_total_nodes * idim + inode] = in_node_coords[inode, idim]
 
     cpdef void add_element_group(self, element_class, int[:, :] in_elem_to_node_indices):
         # in_elem_to_node_indices: 2-D Python array
         # self.elem_to_node_indices: 1-D Cython array
         # elem_to_node_indices: 1-D Cython memory view
+        # Assuming all elements are having same number of nodes
 
         cdef int i, j, ni, nj
-        cdef int old_length, new_length
+        # cdef int old_length, new_length
 
-        cdef int[:] elem_to_node_indices = self.elem_to_node_indices
-        cdef int[:] elem_to_node_indices_i0 = self.elem_to_node_indices_i0
-        cdef int[:] elem_to_node_indices_i1 = self.elem_to_node_indices_i1
+        # cdef int[:] elem_to_node_indices = self.elem_to_node_indices
+        # cdef int[:] elem_to_node_indices_i0 = self.elem_to_node_indices_i0
+        # cdef int[:] elem_to_node_indices_i1 = self.elem_to_node_indices_i1
 
         num_new_elements = in_elem_to_node_indices.shape[0]
         num_nodes_per_element = in_elem_to_node_indices.shape[1]
 
-        old_length = len(self.elem_to_node_indices)
-        new_length = old_length + num_new_elements * num_nodes_per_element
+        shape = self.elem_to_node_indices.shape[0] + num_new_elements
+        rank = self.elem_to_node_indices.rank
+        self.elem_to_node_indices.reshape(shape, rank)
 
-        print(self.node_coords)
-        array.extend
+        for i in range(num_nodes_per_element):
+            for j in range(num_new_elements):
+                ni = self.elem_to_node_indices.shape[0] - num_new_elements
+                self.elem_to_node_indices.data[(ni + i) * num_new_elements + j] = in_elem_to_node_indices[i,j]
+
+        
+
+
+
+
+
+        # old_length = len(self.elem_to_node_indices)
+        # new_length = old_length + num_new_elements * num_nodes_per_element
 
 
         # array.extend(self.elem_to_node_indices_i0, [old_length])
