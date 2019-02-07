@@ -1,7 +1,7 @@
 import cython
 import numpy as np
 cimport numpy as np
-from cpython cimport array
+# from cpython cimport array
 from linear_algebra.arrays import Array
 
 from fea_element import FEAElement
@@ -9,120 +9,64 @@ from fea_element import FEAElement
 
 cdef class FEAMesh():
 
-    cdef int num_dimensions
-    cdef int num_total_nodes
-
-    cdef int num_total_elements
-
-    cdef node_coords = Array()
-
-    cdef elem_to_node_indices = Array()
-    cdef elem_to_node_indices_i0 = Array()
-    cdef elem_to_node_indices_i1 = Array()
+    # cdef elem_to_node_indices_i0 = Array()
+    # cdef elem_to_node_indices_i1 = Array()
 
     def __cinit__(self):
-        self.num_total_elements = 0
 
-        self.elem_to_node_indices = Array()
-        self.elem_to_node_indices_i0 = Array()
-        self.elem_to_node_indices_i1 = Array()
+        self.num_elem = 0
+        self.num_nodes = 0
+        self.num_dim = 0
 
-    cpdef void set_nodes(self, double[:, :] in_node_coords):
-        # in_node_coords: 2-D Python array
-        # self.node_coords: 1-D Cython array
-        # node_coords: 1-D Cython memory view
-
-        cdef int inode, idim
-        cdef double[:] node_coords
-
-        # Initial allocation of memory for self.node_coords
+        self.eft = Array()                  #max. num of nodes per element set as 10
         self.node_coords = Array()
-        cdef np.ndarray[int, ndim=1, mode='c'] shape = np.array([in_node_coords.shape[0], in_node_coords.shape[1]], dtype =np.intc)
-        self.node_coords.allocate(<int*>shape.data, 2, 1)
+        # self.elem_to_node_indices_i0 = Array()
+        # self.elem_to_node_indices_i1 = Array()
 
-        # The local variable node_coords points to self.node_coords
-        # node_coords = self.node_coords
+    
+    cpdef void set_nodes(self, int[:, :] node_coords): #num of dim fixed for any given mesh at the start of the program
+        cpdef node_coords_1d = np.empty(node_coords.size)
+        cdef int t = 0
+
+        for i in range(node_coords.shape[0]):
+            for j in range(node_coords.shape[1]):
+                node_coords_1d[t] = node_coords[i][j]
+                t += 1
+
+        cdef np.ndarray[int, ndim=1, mode='c'] shape = np.array([node_coords.shape[0], node_coords.shape[1]], dtype =np.intc)   #shape of node_coords input
+        if self.num_dim == 0:
+            self.num_dim = node_coords.shape[1]
+            self.node_coords.init_np_double(<int*>shape.data, 2, node_coords_1d)             
+        else:
+            temp = Array()
+            temp.init_np_double(<int*>shape.data, 2, node_coords_1d) 
+            self.node_coords.append(temp, 1.)
+        self.num_nodes += node_coords.shape[0]
+
+    cpdef void add_element_group(self, element_class, int[:, :] eft):
+        cpdef eft_1d = np.empty(eft.size)
+        cdef int t = 0
+
+        for i in range(eft.shape[0]):
+            for j in range(eft.shape[1]):
+                eft_1d[t] = eft[i][j]
+                t += 1
+            for j in range(eft.shape[1], 10):
+                eft_1d[t] = -1
+                t += 1
         
-        self.num_total_nodes = in_node_coords.shape[0]
-        self.num_dimensions = in_node_coords.shape[1]
+        cdef np.ndarray[int, ndim=1, mode='c'] shape = np.array([eft.shape[0], 10], dtype =np.intc)   #shape of eft input
+        if self.num_dim == 0:
+            self.eft.init_np_double(<int*>shape.data, 2, eft_1d) 
+        else:
+            temp = Array()
+            temp.init_np_double(<int*>shape.data, 2, eft_1d) 
+            self.eft.append(temp, 1.)
 
-        # Turn 2-D array (in_node_coords) into 1-D array (node_coords)
-        for idim in range(self.num_dimensions):
-            for inode in range(self.num_total_nodes):
-                self.node_coords.data[self.num_total_nodes * idim + inode] = in_node_coords[inode, idim]
+        self.num_elem += eft.shape[0]
 
-    cpdef void add_element_group(self, element_class, int[:, :] in_elem_to_node_indices):
-        # in_elem_to_node_indices: 2-D Python array
-        # self.elem_to_node_indices: 1-D Cython array
-        # elem_to_node_indices: 1-D Cython memory view
-        # Assuming all elements are having same number of nodes
+    
 
-        cdef int i, j, ni, nj
-        # cdef int old_length, new_length
+    
 
-        # cdef int[:] elem_to_node_indices = self.elem_to_node_indices
-        # cdef int[:] elem_to_node_indices_i0 = self.elem_to_node_indices_i0
-        # cdef int[:] elem_to_node_indices_i1 = self.elem_to_node_indices_i1
-
-        num_new_elements = in_elem_to_node_indices.shape[0]
-        num_nodes_per_element = in_elem_to_node_indices.shape[1]
-
-        shape = self.elem_to_node_indices.shape[0] + num_new_elements
-        rank = self.elem_to_node_indices.rank
-        self.elem_to_node_indices.reshape(shape, rank)
-
-        for i in range(num_nodes_per_element):
-            for j in range(num_new_elements):
-                ni = self.elem_to_node_indices.shape[0] - num_new_elements
-                self.elem_to_node_indices.data[(ni + i) * num_new_elements + j] = in_elem_to_node_indices[i,j]
-
-        
-
-
-
-
-
-        # old_length = len(self.elem_to_node_indices)
-        # new_length = old_length + num_new_elements * num_nodes_per_element
-
-
-        # array.extend(self.elem_to_node_indices_i0, [old_length])
-        # array.extend(self.elem_to_node_indices_i1, [new_length])
-        # array.extend(self.elem_to_node_indices, new_elem_to_node_indices)
-
-
-
-
-
-
-    # cpdef void add_element_group00(self, FEAElement elem, int[:, :] node_indices):
-    #     cdef int i, j, ni, nj
-
-    #     ni = node_indices.shape[0]
-    #     nj = node_indices.shape[1]
-
-    #     new_node_indices = np.zeros(
-    #         self.node_indices.shape[0] + ni * nj)
-
-    #     new_node_indices_ranges = np.zeros(
-    #         (self.node_indices_ranges[0] + 1, 2))
-
-    #     for i in range(self.node_indices.shape[0]):
-    #         new_node_indices[i] = self.node_indices[i]
-
-    #     for i in range(self.node_indices_ranges.shape[0]):
-    #         for j in range(2):
-    #             new_node_indices_ranges[i, j] = self.node_indices_ranges[i, j]
-
-    #     new_node_indices_ranges[self.node_indices_ranges.shape[0] + 1, 0] = self.node_indices_ranges[i, 1]
-    #     new_node_indices_ranges[self.node_indices_ranges.shape[0] + 1, 1] = self.node_indices_ranges[i, 1] + ni * nj
-
-    #     for i in range(ni):
-    #         for j in range(nj):
-            
-    #             new_node_indices[self.node_indices.shape[0] + i * nj + j] = node_indices[i, j]
-
-    #     self.node_indices = new_node_indices
-    #     self.node_indices_ranges = new_node_indices_ranges
-
-    #     self.num_total_elements = self.num_total_elements + node_indices.shape[0]
+    
